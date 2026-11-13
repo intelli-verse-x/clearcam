@@ -15,36 +15,42 @@ import numpy as np
 BASE_DIR = Path(__file__).parent.parent / "data"
 from tinygrad import Tensor, TinyJit
 
-def send_notif(session_token: str, text=None, body_text=None):
-    host = "www.clearcam.org"
+def send_notif(session_token: str, text=None, body_text=None, host="https://clearcam.org", img=None):
+    https = host.startswith("https://")
+    if host.startswith("http"): host = host[host.index("//")+2:] # remove https:// / http:
     endpoint = "/send" #/test
     boundary = f"Boundary-{uuid.uuid4()}"
     content_type = f"multipart/form-data; boundary={boundary}"
-    lines = [
+    lines = []
+    if session_token is not None:
+      lines.extend([
         f"--{boundary}",
         'Content-Disposition: form-data; name="session_token"',
         "",
         session_token,
-        f"--{boundary}--",
-        ""
-    ]
+      ])
     if text is not None:
       lines.extend([
-      f"--{boundary}",
-      'Content-Disposition: form-data; name="text"',
-      "",
-      text,
-    ])
+        f"--{boundary}",
+        'Content-Disposition: form-data; name="text"',
+        "",
+        text,
+      ])
     if body_text is not None:
       lines.extend([
-      f"--{boundary}",
-      'Content-Disposition: form-data; name="body_text"',
-      "",
-      body_text,
-    ])
+        f"--{boundary}",
+        'Content-Disposition: form-data; name="body_text"',
+        "",
+        body_text,
+      ])
+    lines.extend([f"--{boundary}--", ""])
 
     body = "\r\n".join(lines).encode("utf-8")
-    conn = http.client.HTTPSConnection(host)
+    if img is not None and host != "clearcam.org":
+      with open(img, "rb") as f: img_data = f.read()
+      body += (f"--{boundary}\r\n"f'Content-Disposition: form-data; name="img"; filename="{os.path.basename(img)}"\r\n'f"Content-Type: image/jpeg\r\n\r\n").encode() + img_data + f"\r\n--{boundary}--\r\n".encode()
+
+    conn = http.client.HTTPSConnection(host) if https else  http.client.HTTPConnection(host)
     headers = {"Content-Type": content_type, "Content-Length": str(len(body))}
     try:
         conn.request("POST", endpoint, body, headers)
@@ -81,19 +87,16 @@ def draw_bounding_boxes(orig_img_path, predictions, class_labels):
   object_count = defaultdict(int)
   
   for pred in predictions:
-    if len(pred) == 7: # todo
-      x1, y1, x2, y2, conf, class_id, _ = pred
-    else:
-      x1, y1, x2, y2, conf, class_id = pred
+    if len(pred) == 7: x1, y1, x2, y2, conf, class_id, track_id = pred
     if conf == 0:
         continue
 
-    x1, y1, x2, y2, class_id = map(int, (x1, y1, x2, y2, class_id))
+    x1, y1, x2, y2, class_id, track_id = map(int, (x1, y1, x2, y2, class_id, track_id))
     color = color_dict[class_labels[class_id]]
 
     cv2.rectangle(orig_img, (x1, y1), (x2, y2), color, box_thickness)
 
-    label = f"{class_labels[class_id]} {conf:.2f}"
+    label = f"{class_labels[class_id]} {track_id}"
     text_size, _ = cv2.getTextSize(label, font, font_scale, 1)
     label_y, bg_y = (
         (y1 - 4, y1 - text_size[1] - 4)
@@ -131,46 +134,50 @@ def resize(img, new_size):
   return img
 
 def export_clip(stream_dir, output_path: Path, live=False, length=5, end=0, start=None):
-  segments = sorted(stream_dir.glob("*.ts"), key=os.path.getmtime)
+  segments = sorted(stream_dir.glob("*.m4s"), key=os.path.getmtime)
   recent_segments = deque()
-  cutoff = os.path.getmtime(segments[0]) + start if start is not None else time.time() - length if live else time.time() - length
-  end = os.path.getmtime(segments[0]) + start + length if start is not None else time.time() - end
-  recent_raw = [f for f in segments if os.path.getmtime(f) >= cutoff and os.path.getmtime(f) <= end]
+  first_segment_time = os.path.getmtime(segments[0])
+  if start is not None:
+    cutoff = first_segment_time + start
+    end_time = cutoff + length
+  else:
+    cutoff = time.time() - length
+    end_time = time.time() - end
+  recent_raw = [f for f in segments if cutoff <= os.path.getmtime(f) <= end_time]
   recent_segments.extend(recent_raw)
-  concat_list_path = stream_dir / "concat_list.txt"
-  with open(concat_list_path, "w") as f: f.writelines(f"file '{segment.resolve()}'\n" for segment in recent_segments)
+  if live and recent_segments and recent_segments[-1] == segments[-1]: recent_segments.pop()
   output_path.parent.mkdir(parents=True, exist_ok=True)
   ffmpeg_path = find_ffmpeg()
-  with open(stream_dir / "concat_list.txt", "r") as f: print(" ".join(line.strip() for line in f)) # todo
-  crf = 32
-  while True:
-    command = [
+  init_path = stream_dir / "init.mp4"
+  combined_path = stream_dir / ".export_combined.mp4"
+
+  try:
+    with open(combined_path, "wb") as out:
+      with open(init_path, "rb") as f: out.write(f.read())
+      for segment in recent_segments:
+        with open(segment, "rb") as f: out.write(f.read())
+    crf = 32
+    while True:
+      command = [
         ffmpeg_path,
         "-y",
-        "-f", "concat",
-        "-safe", "0",
-        "-i", str(concat_list_path),
+        "-i", str(combined_path),
         *(["-vf", "scale=-2:240,fps=24,format=yuv420p", "-preset", "veryslow",] if live else []),
-        "-c:v", "libx264",  
+        "-c:v", "libx264",
         "-pix_fmt", "yuv420p",
         "-preset", "veryslow",
         "-crf", str(crf),
         "-an",
         str(output_path)
-    ]
-    subprocess.run(command, check=True)
-    crf += 5
-    file_size = 10*1024*1024
-    with open(output_path, "rb") as f:
-      file_data = f.read()
-      file_size = len(file_data)
-    if file_size <= 9*1024*1024:
-      break # max size 10MB, # todo, calculate time from ts files
-    else:
+      ]
+      subprocess.run(command, check=True)
+      if output_path.stat().st_size < 9*1024*1024: break
       crf += 5
 
-def export_and_upload(cam_name, thumbnail, userID, key, start=None, end=0, length=20, wait=False):
-    if wait: time.sleep(10) # todo, objects can be too far ahead 
+  finally:
+    if combined_path.exists(): combined_path.unlink()
+
+def export_and_upload(cam_name, thumbnail, userID, key, start=None, end=0, length=20):
     os.makedirs(BASE_DIR / "cameras" / cam_name / "event_clips", exist_ok=True)
     mp4_filename = BASE_DIR / "cameras" / f"{cam_name}/event_clips/{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.mp4"
     temp_output = BASE_DIR / "cameras" / f"{cam_name}/event_clips/{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}_temp.mp4"
@@ -181,14 +188,13 @@ def export_and_upload(cam_name, thumbnail, userID, key, start=None, end=0, lengt
     upload_file(Path(f"{mp4_filename}.aes"), userID)
     os.unlink(mp4_filename)
 
-def jit_infer(fn, x, jit_cache):
-    shape = tuple(x.shape)
-    if shape not in jit_cache:
-        @TinyJit
-        def compiled(x, fn):
-            return fn(x)
-        jit_cache[shape] = compiled
-    return jit_cache[shape](x, fn)
+def jit_infer(fn, *x, jit_cache):
+  shapes = tuple(xi.shape if hasattr(xi, "shape") else xi for xi in x)
+  if shapes not in jit_cache:
+    @TinyJit
+    def compiled(*x): return fn(*x)
+    jit_cache[shapes] = compiled
+  return jit_cache[shapes](*x)
 
 def find_ffmpeg():
     ffmpeg_path = shutil.which('ffmpeg')
