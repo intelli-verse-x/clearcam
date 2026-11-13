@@ -24,6 +24,8 @@ from utils.db import db
 import multiprocessing
 import re
 import base64
+from utils.exports import exported_recording
+from utils.notifications import should_send_notification
 from utils.helpers import send_notif, find_ffmpeg, export_clip, upload_file, encrypt_file, export_and_upload, jit_infer, BASE_DIR
 import pickle
 import os
@@ -436,7 +438,7 @@ class VideoCapture:
         print(f"\rFPS: {fps:.2f}", end="", flush=True)
       else:
         self.last_frame_num[cam_name] = self.frame_num[cam_name]
-        self.last_preds = []
+        self.last_preds[cam_name] = []
 
     filtered_preds = self.last_preds[cam_name]
 
@@ -464,7 +466,7 @@ class VideoCapture:
               if (plain := filepath / f"{ts}.jpg").exists() and (filepath / f"{ts}_notif.jpg").exists():
                 plain.unlink() # only one image per event
                 self.filename[cam_name] = filepath / f"{ts}_notif.jpg"
-              if global_settings.use_notifs() is not None and not self.vod[cam_name] and alert.is_notif:
+              if should_send_notification(global_settings, self.vod[cam_name], alert.is_notif):
                 title = f"Event Detected ({cam_name})"
                 threading.Thread(target=send_notif, kwargs={"session_token": global_settings.userID,"text":title,"body_text": None,"host": global_settings.server_url, "img": self.filename[cam_name]}, daemon=True).start()
                 if global_settings.use_qwen: # extra notif if qwen
@@ -695,34 +697,21 @@ class HLSRequestHandler(BaseHTTPRequestHandler):
 
         if parsed_path.path == "/export":
           date = query.get("date", [None])[0]
-          stream_dir = (Path("data") / "cameras" / cam_name / "streams" / date)
-          output_path = stream_dir / "_export.mp4"
-          m4s_files = sorted(stream_dir.glob("stream_*.m4s"))
-          ffmpeg_path = find_ffmpeg()
-          command = [
-            ffmpeg_path,
-            "-y",
-            "-loglevel", "error",
-            "-i", "pipe:0",
-            "-c", "copy",
-            "-movflags", "+faststart",
-            str(output_path),
-          ]
-          proc = subprocess.Popen(command, stdin=subprocess.PIPE)
           try:
-            with (stream_dir / "init.mp4").open("rb") as f: shutil.copyfileobj(f, proc.stdin)
-            for m4s in m4s_files:
-              with m4s.open("rb") as f: shutil.copyfileobj(f, proc.stdin)
-          finally:
-            proc.stdin.close()
-          if proc.wait() != 0: output_path.unlink(missing_ok=True)
-          self.send_response(200)
-          self.send_header("Content-Type", "video/mp4")
-          self.send_header("Content-Disposition", f'attachment; filename="{cam_name}_{date}.mp4"',)
-          self.send_header("Content-Length", str(output_path.stat().st_size))
-          self.end_headers()
-          with output_path.open("rb") as f: shutil.copyfileobj(f, self.wfile)
-          output_path.unlink()
+            with exported_recording(BASE_DIR, cam_name, date) as output_path:
+              self.send_response(200)
+              self.send_header("Content-Type", "video/mp4")
+              self.send_header("Content-Disposition", 'attachment; filename="recording.mp4"')
+              self.send_header("Content-Length", str(output_path.stat().st_size))
+              self.end_headers()
+              with output_path.open("rb") as source: shutil.copyfileobj(source, self.wfile)
+          except ValueError:
+            self.send_error(400, "Invalid recording path")
+          except FileNotFoundError:
+            self.send_error(404, "Recording not found")
+          except (RuntimeError, subprocess.SubprocessError):
+            self.send_error(502, "Recording export failed")
+          return
 
         if parsed_path.path == "/set_max_storage":
           max_gb = float(query.get("max", [None])[0])

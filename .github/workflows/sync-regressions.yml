@@ -1,0 +1,31 @@
+name: Isolated protocol and recording regressions
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  synthetic-regressions:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+      - name: Install native synthetic-media tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          ffmpeg -version
+          ffprobe -version
+      - name: Check Python syntax without importing camera or ML code
+        run: |
+          python3 - <<'PY'
+          import ast
+          from pathlib import Path
+          for path in Path('.').rglob('*.py'):
+              ast.parse(path.read_text(), filename=str(path))
+          PY
+      - name: Test mocked notifications and synthetic recording exports
+        run: python3 -m unittest discover -s test -p test_sync_regressions.py -v

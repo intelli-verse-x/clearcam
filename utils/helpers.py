@@ -15,52 +15,7 @@ import numpy as np
 BASE_DIR = Path(__file__).parent.parent / "data"
 from tinygrad import Tensor, TinyJit
 
-def send_notif(session_token: str, text=None, body_text=None, host="https://clearcam.org", img=None):
-    https = host.startswith("https://")
-    if host.startswith("http"): host = host[host.index("//")+2:] # remove https:// / http:
-    endpoint = "/send" #/test
-    boundary = f"Boundary-{uuid.uuid4()}"
-    content_type = f"multipart/form-data; boundary={boundary}"
-    lines = []
-    if session_token is not None:
-      lines.extend([
-        f"--{boundary}",
-        'Content-Disposition: form-data; name="session_token"',
-        "",
-        session_token,
-      ])
-    if text is not None:
-      lines.extend([
-        f"--{boundary}",
-        'Content-Disposition: form-data; name="text"',
-        "",
-        text,
-      ])
-    if body_text is not None:
-      lines.extend([
-        f"--{boundary}",
-        'Content-Disposition: form-data; name="body_text"',
-        "",
-        body_text,
-      ])
-    lines.extend([f"--{boundary}--", ""])
-
-    body = "\r\n".join(lines).encode("utf-8")
-    if img is not None and host != "clearcam.org":
-      with open(img, "rb") as f: img_data = f.read()
-      body += (f"--{boundary}\r\n"f'Content-Disposition: form-data; name="img"; filename="{os.path.basename(img)}"\r\n'f"Content-Type: image/jpeg\r\n\r\n").encode() + img_data + f"\r\n--{boundary}--\r\n".encode()
-
-    conn = http.client.HTTPSConnection(host) if https else  http.client.HTTPConnection(host)
-    headers = {"Content-Type": content_type, "Content-Length": str(len(body))}
-    try:
-        conn.request("POST", endpoint, body, headers)
-        response = conn.getresponse()
-        print(f"Status: {response.status} {response.reason}")
-        print(response.read().decode())
-    except Exception as e:
-        print(f"Error sending session token: {e}")
-    finally:
-        conn.close()
+from utils.notifications import send_notif
 
 
 def draw_bounding_boxes(orig_img_path, predictions, class_labels):
@@ -188,7 +143,15 @@ def export_and_upload(cam_name, thumbnail, userID, key, start=None, end=0, lengt
     upload_file(Path(f"{mp4_filename}.aes"), userID)
     os.unlink(mp4_filename)
 
-def jit_infer(fn, *x, jit_cache):
+def jit_infer(fn, *x, jit_cache=None, **kwargs):
+  # Retain both the original positional-cache API and the newer multi-input API.
+  if "x" in kwargs:
+    if x: raise TypeError("Specify tensor input positionally or by x, not both")
+    x = (kwargs.pop("x"),)
+  if kwargs: raise TypeError("Unexpected inference arguments")
+  if jit_cache is None and len(x) > 1 and isinstance(x[-1], dict):
+    *x, jit_cache = x
+  if jit_cache is None: raise TypeError("jit_cache is required")
   shapes = tuple(xi.shape if hasattr(xi, "shape") else xi for xi in x)
   if shapes not in jit_cache:
     @TinyJit
