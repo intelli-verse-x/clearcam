@@ -29,3 +29,19 @@ jobs:
           PY
       - name: Test mocked notifications and synthetic recording exports
         run: python3 -m unittest discover -s test -p test_sync_regressions.py -v
+  cpu-detector-fixture:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      DEV: CPU
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+      - name: Install pinned detector dependencies into an isolated environment
+        run: |
+          python3 -m venv .venv
+          .venv/bin/python -m pip install --disable-pip-version-check -r requirements.txt
+      - name: Check detector fixture using CPU and public model weights
+        run: .venv/bin/python test/test_yolo.py
