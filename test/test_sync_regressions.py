@@ -16,7 +16,7 @@ from unittest.mock import patch
 from urllib.parse import urlparse, unquote, parse_qs
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from utils.exports import exported_recording, recording_directory
+from utils.exports import exported_recording, recording_directory, find_ffmpeg
 from utils.notifications import send_notif, should_send_notification
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -103,6 +103,10 @@ class ExportTests(unittest.TestCase):
         self.base = Path(self.temporary.name)
         self.stream = self.base / "cameras" / "front" / "streams" / "2026-11-12"
         self.stream.mkdir(parents=True)
+
+    def test_existing_common_ffmpeg_installation_remains_supported(self):
+        with patch("utils.exports.shutil.which", return_value=None), patch("utils.exports.os.path.exists", side_effect=lambda path: path == "/opt/homebrew/bin/ffmpeg"):
+            self.assertEqual(find_ffmpeg(), "/opt/homebrew/bin/ffmpeg")
 
     def request_export(self, path):
         # Exercise the actual handler method without importing its module, which

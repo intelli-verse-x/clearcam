@@ -16,6 +16,7 @@ BASE_DIR = Path(__file__).parent.parent / "data"
 from tinygrad import Tensor, TinyJit
 
 from utils.notifications import send_notif
+from utils.exports import find_ffmpeg
 
 
 def draw_bounding_boxes(orig_img_path, predictions, class_labels):
@@ -159,19 +160,6 @@ def jit_infer(fn, *x, jit_cache=None, **kwargs):
     jit_cache[shapes] = compiled
   return jit_cache[shapes](*x)
 
-def find_ffmpeg():
-    ffmpeg_path = shutil.which('ffmpeg')
-    if ffmpeg_path:
-        return ffmpeg_path
-    common_paths = [
-        '/opt/homebrew/bin/ffmpeg',
-        '/usr/local/bin/ffmpeg',
-        '/usr/bin/ffmpeg'
-    ]
-    for path in common_paths:
-        if os.path.exists(path):
-            return path
-    return 'ffmpeg'
 
 def upload_file(file_path: Path, session_token: str):
     if not file_path.exists():

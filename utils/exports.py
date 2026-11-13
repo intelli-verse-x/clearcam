@@ -1,9 +1,25 @@
 """Bounded recording exports, independent of detector/model initialization."""
 from contextlib import contextmanager, suppress
 from pathlib import Path
+import os
 import shutil
 import subprocess
 import tempfile
+
+
+def find_ffmpeg():
+    ffmpeg_path = shutil.which('ffmpeg')
+    if ffmpeg_path:
+        return ffmpeg_path
+    common_paths = [
+        '/opt/homebrew/bin/ffmpeg',
+        '/usr/local/bin/ffmpeg',
+        '/usr/bin/ffmpeg'
+    ]
+    for path in common_paths:
+        if os.path.exists(path):
+            return path
+    return 'ffmpeg'
 
 
 def recording_directory(base_dir, camera, date):
@@ -31,8 +47,8 @@ def exported_recording(base_dir, camera, date):
     for path in [init, *segments]:
         if path.is_symlink():
             raise ValueError("Recording files must not be symbolic links")
-    ffmpeg = shutil.which("ffmpeg")
-    if not ffmpeg:
+    ffmpeg = find_ffmpeg()
+    if ffmpeg == "ffmpeg" and not shutil.which(ffmpeg):
         raise RuntimeError("FFmpeg is not available")
     # Every request owns its output; concurrent exports cannot overwrite it.
     with tempfile.TemporaryDirectory(prefix=".export-", dir=stream) as temporary:
